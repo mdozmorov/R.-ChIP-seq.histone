@@ -1,0 +1,138 @@
+```{r setup, echo=FALSE, include=FALSE, cache=FALSE}
+# Set up the environment
+library(knitr) 
+opts_chunk$set(cache.path='cache/', fig.path='img/', cache=T, tidy=T, fig.keep='high', dpi=300, out.width=700, echo=F, autodep=T)
+options(replace.assign=TRUE, width=120)
+set.seed(1)
+```
+
+```{r loadLibraries, warning=FALSE, message=FALSE}
+library(biomaRt)
+# Use the latest biomart version for mm
+mart <- useMart("ensembl", dataset="mmusculus_gene_ensembl")
+library(gridExtra)
+annotDb <- "org.Mm.eg.db"
+library(package=annotDb, character.only=T)
+library(GO.db)
+library(GOstats)
+library(KEGG.db)
+library(reactome.db)
+# Preparing environment for remapping Gene Symbols to Entrez IDs
+x <- org.Mm.egSYMBOL2EG
+# Get the entrez gene identifiers that are mapped to a gene symbol
+mapped_genes <- mappedkeys(x)
+# Convert to a list
+xx <- as.list(x[mapped_genes])
+xxx <- revmap(xx)
+library(DESeq2)
+library(gplots)
+library(ChIPpeakAnno)
+```
+
+Analysis of histone marks after filtering out reads overlapping low complexity regions
+=======================================================================================
+
+About 70% of such reads were removed.
+
+Differentially expressed peaks, as identified by MACS2
+------------------------------------------------------
+MACS2 identified differential peaks by comparing KO and WT conditions directly, without considering input signal.
+
+```{r loadData, message=FALSE}
+KO_vs_WT_H3K27me3 <-BED2RangedData(as.data.frame(read.table("data.rs0//KO_vs_WT_H3K27me3_broad_peaks.bed", sep="\t", header=F)[, 1:4]))
+KO_vs_WT_H3K4me2 <-BED2RangedData(as.data.frame(read.table("data.rs0//KO_vs_WT_H3K4me2_broad_peaks.bed", sep="\t", header=F)[, 1:4]))
+KO_vs_WT_H3K9 <-BED2RangedData(as.data.frame(read.table("data.rs0//KO_vs_WT_H3K9_broad_peaks.bed", sep="\t", header=F)[, 1:4]))
+res.all <-list(KO_vs_WT_H3K27me3=KO_vs_WT_H3K27me3, KO_vs_WT_H3K4me2=KO_vs_WT_H3K4me2, KO_vs_WT_H3K9=KO_vs_WT_H3K9)
+```
+
+* First, we check the number of differentially bound peaks.
+
+```{r resAll}
+for (i in 1:length(res.all)) {
+  print("============================================")
+  print(c("Condition" ,names(res.all)[i]))
+  print(c("Number of Peaks:", nrow(res.all[[i]])))
+}
+```
+
+Conclusion: Main differences are observed in H3K27me3 and H3K9 conditions.
+
+* Second, we check if these peaks. overlap.
+
+```{r venn1, warning=FALSE, results='hide'}
+makeVennDiagram(RangedDataList(res.all[[1]], res.all[[3]]), NameOfPeaks=c("H3K27me3", "H3K9"), maxgap=0, minoverlap=1, totalTest=100, cex=1, counts.col="red")
+```
+
+Conclusion: Differentially bound peaks are largely non-overlapping.
+
+* Third, we annotate the peaks by their relation to genes, and save the results in files.
+
+```{r annotTss, message=FALSE}
+# Function for annotating Ranged data, appending gene symbol to the annotation
+annotatePeaks <- function(x, featureType="TSS") {
+  return(addGeneIDs(annotatePeakInBatch(x, AnnotationData=getAnnotation(mart, featureType=featureType)), "org.Mm.eg.db", c("symbol")))
+}
+KO_vs_WT_H3K27me3.annot <- annotatePeaks(res.all[[1]])
+KO_vs_WT_H3K4me2.annot <- annotatePeaks(res.all[[2]])
+KO_vs_WT_H3K9.annot <- annotatePeaks(res.all[[3]])
+write.table(as.data.frame(KO_vs_WT_H3K27me3.annot), "results.rs0/KO_vs_WT_H3K27me3.annot", sep="\t")
+write.table(as.data.frame(KO_vs_WT_H3K4me2.annot), "results.rs0/KO_vs_WT_H3K4me2.annot", sep="\t")
+write.table(as.data.frame(KO_vs_WT_H3K9.annot), "results.rs0/KO_vs_WT_H3K9.annot", sep="\t")
+```
+
+* Fourth, we check where the peaks occur most frequently, in relation to genes.
+
+```{r pie1}
+pie(table(KO_vs_WT_H3K27me3.annot$insideFeature), main="KO_WT_H3K27me3")
+```
+
+```{r pie3}
+pie(table(KO_vs_WT_H3K9.annot$insideFeature), main="KO_WT_H3K9")
+```
+
+Conclusion: Majority of the peaks are located upstream of genes, some are insight, some are downstream
+
+* Fifth, we look at the enriched gene ontologies and KEGG pathways that may be affected by genes where differential peaks are located
+
+Test files contain more detailed information about the enrichments, including which genes belong to which enriched category.
+
+No multiple testing is applied, to be more inclusive. Caveat emptor.
+
+KO_vs_WT_H3K27me3.GO
+---------------------
+```{r enrichedGO1, fig.height=3}
+KO_vs_WT_H3K27me3.GO <- getEnrichedGO(KO_vs_WT_H3K27me3.annot, orgAnn="org.Mm.eg.db", maxP=0.01)
+write.table(as.matrix(cbind(KO_vs_WT_H3K27me3.GO$mf, GeneName=matrix(xxx[KO_vs_WT_H3K27me3.GO$mf$EntrezID], ncol=1))), file="results.rs0/KO_vs_WT_H3K27me3.GO.mf", col.names=NA, sep="\t")
+grid.table(unique(KO_vs_WT_H3K27me3.GO$mf[,c("Definition", "pvalue")]), gp=gpar(fontsize=7))
+```
+
+KO_vs_WT_H3K27me3.KEGG
+----------------------
+```{r enrichKEGG1, fig.height=0.5}
+KO_vs_WT_H3K27me3.KEGG <- getEnrichedPATH(KO_vs_WT_H3K27me3.annot, orgAnn="org.Mm.eg.db", pathAnn="KEGG.db", maxP=0.01)
+write.table(as.matrix(cbind(KO_vs_WT_H3K27me3.KEGG, GeneName=matrix(xxx[KO_vs_WT_H3K27me3.KEGG$EntrezID], ncol=1))), file="results.rs0/KO_vs_WT_H3K27me3.KEGG", col.names=NA, sep="\t")
+grid.table(unique(KO_vs_WT_H3K27me3.KEGG[,c("PATH", "pvalue")]), gp=gpar(fontsize=10))
+```
+
+KO_vs_WT_H3K9.GO
+-----------------
+```{r enrichedGO3, fig.height=3}
+KO_vs_WT_H3K9.GO <- getEnrichedGO(KO_vs_WT_H3K9.annot, orgAnn="org.Mm.eg.db", maxP=0.01)
+write.table(as.matrix(cbind(KO_vs_WT_H3K9.GO$mf, GeneName=matrix(xxx[KO_vs_WT_H3K9.GO$mf$EntrezID], ncol=1))), file="results.rs0/KO_vs_WT_H3K9.GO.mf", col.names=NA, sep="\t")
+grid.table(unique(KO_vs_WT_H3K9.GO$mf[,c("Definition", "pvalue")]), gp=gpar(fontsize=8))
+```
+
+KO_vs_WT_H3K9.KEGG
+--------------------
+```{r enrichKEGG3}
+KO_vs_WT_H3K9.KEGG <- getEnrichedPATH(KO_vs_WT_H3K9.annot, orgAnn="org.Mm.eg.db", pathAnn="KEGG.db", maxP=0.01)
+write.table(as.matrix(cbind(KO_vs_WT_H3K9.KEGG, GeneName=matrix(xxx[KO_vs_WT_H3K9.KEGG$EntrezID], ncol=1))), file="results.rs0/KO_vs_WT_H3K9.KEGG", col.names=NA, sep="\t")
+grid.table(unique(KO_vs_WT_H3K9.KEGG[,c("PATH", "pvalue")]), gp=gpar(fontsize=10))
+```
+
+
+
+
+
+
+

@@ -1,0 +1,109 @@
+
+```{r setup, echo=FALSE, include=FALSE, cache=FALSE}
+# Set up the environment
+library(knitr) 
+opts_chunk$set(cache.path='cache/', fig.path='img/', cache=T, tidy=T, fig.keep='high', dpi=300, out.width=700, echo=F, autodep=T)
+options(replace.assign=TRUE, width=120)
+set.seed(1)
+```
+
+```{r loadLibraries, warning=FALSE, message=FALSE}
+library(biomaRt)
+# Use the latest biomart version for mm
+mart <- useMart("ensembl", dataset="mmusculus_gene_ensembl")
+library(gridExtra)
+annotDb <- "org.Mm.eg.db"
+library(package=annotDb, character.only=T)
+library(GO.db)
+library(GOstats)
+library(reactome.db)
+# Preparing environment for remapping Gene Symbols to Entrez IDs
+x <- org.Mm.egSYMBOL2EG
+# Get the entrez gene identifiers that are mapped to a gene symbol
+mapped_genes <- mappedkeys(x)
+# Convert to a list
+xx <- as.list(x[mapped_genes])
+library(DESeq2)
+library(gplots)
+library(ChIPpeakAnno)
+```
+Analysis of histone marks
+=========================
+```{r loadData, message=FALSE}
+countsData<-read.table("data//macs2_broad_peaks_mtx.txt", sep="\t", header=F)
+countsData<-as.matrix(countsData[, -c(1:3)]) # Remove chr,start,end
+rownames(countsData)<-readLines("data//macs2_broad_peaks_row.txt")
+colnames(countsData)<-readLines("data//macs2_broad_peaks_col.txt")
+
+meta<-read.table("data//labels.txt", sep="\t", header=T, row.names=1)
+conds <- c("H3K27me3", "H3K4me2", "H3K9")
+
+res.all <- sapply(conds, function(x){
+  idx<-meta$Type == x
+  colData <- data.frame(condition=factor(paste(meta[idx, "KO.WT"], meta[idx, "Type"], sep="-")), row.names=rownames(meta[idx,]))
+  
+  dds <- DESeqDataSetFromMatrix(countData = countsData[, idx], colData = colData, design = ~ condition)
+  #colData(dds)$condition # Check levels, KO should be first. Relevel, if not
+  dds <- DESeq(dds)
+  res <- results(dds)
+  res <- res[order(res$padj), ]
+  # cat(c("Number of DEGs for", x, ":", sum(res$padj < 0.1, na.rm=T)))
+  write.table(res, paste("results/DEGs_", x, ".txt", sep=""), sep="\t")
+  return(res)
+})
+res.all <- lapply(res.all, function(x) x[complete.cases(x), ]) # Remove rows with NAs
+```
+
+```{r resAll}
+for (i in 1:length(res.all)) {
+  print("============================")
+  print(c("Condition" ,names(res.all)[i]))
+  print(c("Number of Peaks:", nrow(res.all[[i]])))
+}
+
+# Function to convert row names into BED format
+rows2bed <- function(x) {
+  return(t(matrix(unlist(strsplit(rownames(x), ":|-", perl=T)), ncol=nrow(x))))
+} 
+
+res.all.bed <- lapply(res.all, rows2bed)
+res.all.RangedData <- lapply(res.all.bed, function(x) BED2RangedData(data.frame(x)))
+makeVennDiagram(RangedDataList(res.all.RangedData[[1]], res.all.RangedData[[2]]), NameOfPeaks=c("H3K27me3", "H3K4me4"), maxgap=0, minoverlap=1, totalTest=100, cex=1, counts.col="red")
+```
+
+
+```{r DEGs}
+padj <- 0.3
+print(c("Adjusted for multiple testing p-value is set to:", padj))
+for (i in 1:length(res.all)) {
+  print("============================")
+  print(c("Condition" ,names(res.all)[i]))
+  print(c("Number of DEGs:", sum(res.all[[i]]$padj < padj)))
+}
+res.sel <- lapply(res.all, function(x) x[x$padj < padj, ])
+res.sel <- res.sel[lapply(res.sel, nrow) > 0] # Remove empty elements from the list
+
+ 
+
+res.sel.bed <- lapply(res.sel, rows2bed) # Convert row names to data frames, then to RengedData
+res.sel.RangedData <- lapply(res.sel.bed, function(x) BED2RangedData(data.frame(x)))
+```
+
+```{r annotTss}
+annotatePeaks <- function(x, featureType="TSS") {
+  return(as.data.frame(annotatePeakInBatch(x, AnnotationData=getAnnotation(mart, featureType=featureType))))
+}
+
+annotatePeaks(res.sel.RangedData[[2]])
+```
+
+
+
+
+
+
+
+
+
+
+

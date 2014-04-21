@@ -6,3 +6,9 @@
 
 # R data files from past sessions
 .Rdata
+*.Rproj*
+cache/*
+data*
+img/*
+results*
+*.html
